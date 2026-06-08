@@ -88,6 +88,8 @@ func (a *Assistant) Reply(ctx context.Context, conv *model.Conversation) (string
 		openai.SystemMessage("You are a helpful, concise AI assistant. Provide accurate, safe, and clear responses."),
 	}
 
+	var collectedToolOutputs []string
+
 	for _, m := range conv.Messages {
 		switch m.Role {
 		case model.RoleUser:
@@ -265,9 +267,29 @@ func (a *Assistant) Reply(ctx context.Context, conv *model.Conversation) (string
 
 					// Format response
 					w := weatherRes.CurrentWeather
-					out := fmt.Sprintf("%s, %s\nTemperature: %.1f °C\nWindspeed: %.1f km/h\nCondition: %s\nTime (UTC): %s", loc.Name, loc.Country, w.Temperature, w.Windspeed, weatherDesc, w.Time)
+					// Convert wind direction degrees to compass
+					windDirDeg := w.Winddirection
+					windCompass := func(d float64) string {
+						dirs := []string{"N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"}
+						idx := int((d+11.25)/22.5) % 16
+						return dirs[idx]
+					}(windDirDeg)
+
+					out := fmt.Sprintf("%s, %s\nTemperature: %.1f °C\nWindspeed: %.1f km/h (%s)\nWind direction: %.0f° (%s)\nCondition: %s\nTime (UTC): %s", loc.Name, loc.Country, w.Temperature, w.Windspeed, "km/h", windDirDeg, windCompass, weatherDesc, w.Time)
+
+					// Append the tool message (the model sees this as tool output).
 
 					msgs = append(msgs, openai.ToolMessage(out, call.ID))
+
+					// Also append an assistant message that echoes the tool output so
+					// the final assistant reply will contain it verbatim.
+					msgs = append(msgs, openai.AssistantMessage("Tool Output:\n"+out))
+
+					// Add an explicit system instruction so the assistant includes the tool output
+					// verbatim in its final reply, prefixed with 'Tool Output:'. This encourages
+					// the model to surface the tool results to the user.
+					instruction := fmt.Sprintf("When you respond, include the most recent tool output (id: %s) verbatim, prefixed with 'Tool Output:'. After the tool output, provide a concise human-friendly summary or next step.", call.ID)
+					msgs = append(msgs, openai.SystemMessage(instruction))
 				case "get_today_date":
 					msgs = append(msgs, openai.ToolMessage(time.Now().Format(time.RFC3339), call.ID))
 				case "get_holidays":
@@ -324,7 +346,12 @@ func (a *Assistant) Reply(ctx context.Context, conv *model.Conversation) (string
 			continue
 		}
 
-		return resp.Choices[0].Message.Content, nil
+		final := resp.Choices[0].Message.Content
+		if len(collectedToolOutputs) > 0 {
+			final = "Tool Output:\n" + strings.Join(collectedToolOutputs, "\n\n") + "\n\n" + final
+		}
+
+		return final, nil
 	}
 
 	return "", errors.New("too many tool calls, unable to generate reply")
