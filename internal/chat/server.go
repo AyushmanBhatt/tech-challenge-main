@@ -10,6 +10,7 @@ import (
 	"github.com/acai-travel/tech-challenge/internal/pb"
 	"github.com/twitchtv/twirp"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"golang.org/x/sync/errgroup"
 )
 
 var _ pb.ChatService = (*Server)(nil)
@@ -47,18 +48,44 @@ func (s *Server) StartConversation(ctx context.Context, req *pb.StartConversatio
 		return nil, twirp.RequiredArgumentError("message")
 	}
 
-	// choose a title
-	title, err := s.assist.Title(ctx, conversation)
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to generate conversation title", "error", err)
-	} else {
-		conversation.Title = title
+	var (
+		title string
+		reply string
+	)
+
+	g, ctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		var err error
+
+		title, err = s.assist.Title(ctx, conversation)
+		if err != nil {
+			slog.ErrorContext(
+				ctx,
+				"Failed to generate conversation title",
+				"error",
+				err,
+			)
+
+			return nil
+		}
+
+		return nil
+	})
+
+	g.Go(func() error {
+		var err error
+
+		reply, err = s.assist.Reply(ctx, conversation)
+		return err
+	})
+
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
-	// generate a reply
-	reply, err := s.assist.Reply(ctx, conversation)
-	if err != nil {
-		return nil, err
+	if title != "" {
+		conversation.Title = title
 	}
 
 	conversation.Messages = append(conversation.Messages, &model.Message{
