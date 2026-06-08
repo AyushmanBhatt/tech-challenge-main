@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -155,7 +159,115 @@ func (a *Assistant) Reply(ctx context.Context, conv *model.Conversation) (string
 
 				switch call.Function.Name {
 				case "get_weather":
-					msgs = append(msgs, openai.ToolMessage("weather is fine", call.ID))
+					// Parse tool call arguments
+					var payload struct {
+						Location string `json:"location"`
+					}
+
+					if err := json.Unmarshal([]byte(call.Function.Arguments), &payload); err != nil {
+						msgs = append(msgs, openai.ToolMessage("failed to parse tool call arguments: "+err.Error(), call.ID))
+						continue
+					}
+
+					if strings.TrimSpace(payload.Location) == "" {
+						msgs = append(msgs, openai.ToolMessage("location is required", call.ID))
+						continue
+					}
+
+					// Geocode the location using Open-Meteo geocoding API
+					geoURL := "https://geocoding-api.open-meteo.com/v1/search?name=" + url.QueryEscape(payload.Location) + "&count=1"
+					var geores struct {
+						Results []struct {
+							Name      string  `json:"name"`
+							Country   string  `json:"country"`
+							Latitude  float64 `json:"latitude"`
+							Longitude float64 `json:"longitude"`
+						} `json:"results"`
+					}
+
+					func() {
+						ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
+						defer cancel()
+
+						req, _ := http.NewRequestWithContext(ctx2, http.MethodGet, geoURL, nil)
+						resp, err := http.DefaultClient.Do(req)
+						if err != nil {
+							msgs = append(msgs, openai.ToolMessage("geocoding request failed: "+err.Error(), call.ID))
+							return
+						}
+						defer resp.Body.Close()
+
+						b, _ := io.ReadAll(resp.Body)
+						if err := json.Unmarshal(b, &geores); err != nil {
+							msgs = append(msgs, openai.ToolMessage("failed to parse geocoding response: "+err.Error(), call.ID))
+							return
+						}
+					}()
+
+					if len(geores.Results) == 0 {
+						msgs = append(msgs, openai.ToolMessage("location not found: "+payload.Location, call.ID))
+						continue
+					}
+
+					loc := geores.Results[0]
+
+					// Fetch current weather from Open-Meteo
+					weatherURL := fmt.Sprintf("https://api.open-meteo.com/v1/forecast?latitude=%f&longitude=%f&current_weather=true&timezone=UTC", loc.Latitude, loc.Longitude)
+					var weatherRes struct {
+						CurrentWeather struct {
+							Temperature   float64 `json:"temperature"`
+							Windspeed     float64 `json:"windspeed"`
+							Winddirection float64 `json:"winddirection"`
+							Weathercode   int     `json:"weathercode"`
+							Time          string  `json:"time"`
+						} `json:"current_weather"`
+					}
+
+					func() {
+						ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
+						defer cancel()
+
+						req, _ := http.NewRequestWithContext(ctx2, http.MethodGet, weatherURL, nil)
+						resp, err := http.DefaultClient.Do(req)
+						if err != nil {
+							msgs = append(msgs, openai.ToolMessage("weather request failed: "+err.Error(), call.ID))
+							return
+						}
+						defer resp.Body.Close()
+
+						b, _ := io.ReadAll(resp.Body)
+						if err := json.Unmarshal(b, &weatherRes); err != nil {
+							msgs = append(msgs, openai.ToolMessage("failed to parse weather response: "+err.Error(), call.ID))
+							return
+						}
+					}()
+
+					// Map weather code to description (simple mapping)
+					var weatherDesc string
+					switch weatherRes.CurrentWeather.Weathercode {
+					case 0:
+						weatherDesc = "Clear sky"
+					case 1, 2, 3:
+						weatherDesc = "Mainly clear, partly cloudy, or overcast"
+					case 45, 48:
+						weatherDesc = "Fog or depositing rime fog"
+					case 51, 53, 55:
+						weatherDesc = "Drizzle"
+					case 61, 63, 65:
+						weatherDesc = "Rain"
+					case 71, 73, 75:
+						weatherDesc = "Snow"
+					case 80, 81, 82:
+						weatherDesc = "Rain showers"
+					default:
+						weatherDesc = "Unknown conditions"
+					}
+
+					// Format response
+					w := weatherRes.CurrentWeather
+					out := fmt.Sprintf("%s, %s\nTemperature: %.1f °C\nWindspeed: %.1f km/h\nCondition: %s\nTime (UTC): %s", loc.Name, loc.Country, w.Temperature, w.Windspeed, weatherDesc, w.Time)
+
+					msgs = append(msgs, openai.ToolMessage(out, call.ID))
 				case "get_today_date":
 					msgs = append(msgs, openai.ToolMessage(time.Now().Format(time.RFC3339), call.ID))
 				case "get_holidays":
