@@ -29,11 +29,24 @@ func (a *Assistant) Title(ctx context.Context, conv *model.Conversation) (string
 
 	slog.InfoContext(ctx, "Generating title for conversation", "conversation_id", conv.ID)
 
-	msgs := make([]openai.ChatCompletionMessageParamUnion, len(conv.Messages))
+	// For performance and to avoid the model answering the prompt, only send
+	// a concise instruction plus the last user message. This encourages a
+	// short summarizing title instead of an answer.
+	var lastUser string
+	for i := len(conv.Messages) - 1; i >= 0; i-- {
+		if conv.Messages[i].Role == model.RoleUser {
+			lastUser = conv.Messages[i].Content
+			break
+		}
+	}
+	if strings.TrimSpace(lastUser) == "" {
+		// Fallback to the last message if no user message found (shouldn't happen)
+		lastUser = conv.Messages[len(conv.Messages)-1].Content
+	}
 
-	msgs[0] = openai.AssistantMessage("Generate a concise, descriptive title for the conversation based on the user message. The title should be a single line, no more than 80 characters, and should not include any special characters or emojis.")
-	for i, m := range conv.Messages {
-		msgs[i] = openai.UserMessage(m.Content)
+	msgs := []openai.ChatCompletionMessageParamUnion{
+		openai.SystemMessage("You are a concise title generator. Create a short title that summarizes the user's message without answering it. The title should be a single line, no more than 80 characters, and should not include special characters, punctuation, or emojis."),
+		openai.UserMessage(lastUser),
 	}
 
 	resp, err := a.cli.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
