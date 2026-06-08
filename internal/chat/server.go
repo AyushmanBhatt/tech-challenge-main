@@ -53,7 +53,7 @@ func (s *Server) StartConversation(ctx context.Context, req *pb.StartConversatio
 		reply string
 	)
 
-	g, ctx := errgroup.WithContext(ctx)
+	var g errgroup.Group
 
 	g.Go(func() error {
 		var err error
