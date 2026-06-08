@@ -13,9 +13,14 @@ import (
 	"github.com/acai-travel/tech-challenge/internal/pb"
 	"github.com/gorilla/mux"
 	"github.com/twitchtv/twirp"
+	"go.opentelemetry.io/otel"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
 func main() {
+	provider := sdkmetric.NewMeterProvider()
+	otel.SetMeterProvider(provider)
+
 	mongo := mongox.MustConnect()
 
 	repo := model.New(mongo)
@@ -26,6 +31,8 @@ func main() {
 	// Configure handler
 	handler := mux.NewRouter()
 	handler.Use(
+		httpx.Tracing(),
+		httpx.Metrics(),
 		httpx.Logger(),
 		httpx.Recovery(),
 	)

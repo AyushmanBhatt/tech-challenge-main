@@ -9,7 +9,18 @@ services:
     ports:
       - "27017:27017"
     healthcheck:
-      test: ["CMD", "mongo"]
+      test: [
+        "CMD",
+        "mongosh",
+        "-u",
+        "acai",
+        "-p",
+        "travel",
+        "--authenticationDatabase",
+        "admin",
+        "--eval",
+        "db.adminCommand('ping')"
+      ]
       interval: 10s
       timeout: 10s
       retries: 5
