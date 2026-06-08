@@ -3,7 +3,6 @@ package assistant
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
 
@@ -141,8 +140,6 @@ func (a *Assistant) Reply(ctx context.Context, conv *model.Conversation) (string
 				msgs = append(msgs, result.Message)
 				if result.Output != "" {
 					collectedToolOutputs = append(collectedToolOutputs, result.Output)
-					msgs = append(msgs, openai.AssistantMessage("Tool Output:\n"+result.Output))
-					msgs = append(msgs, openai.SystemMessage(fmt.Sprintf("When you respond, include the most recent tool output (id: %s) verbatim, prefixed with 'Tool Output:'. After the tool output, provide a concise human-friendly summary or next step.", call.ID)))
 				}
 			}
 
